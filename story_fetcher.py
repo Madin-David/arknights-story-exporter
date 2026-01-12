@@ -22,6 +22,14 @@ import time
 from datetime import datetime
 from typing import List, Set
 
+# 设置 UTF-8 编码输出（Windows 兼容）
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 from tqdm import tqdm
 from common import Requester, Story, load_names
 from parse_text_to_docx import DocumentAssembler
@@ -368,8 +376,9 @@ def save_per_chapter(client: StoryPRTSClient, name: str, out_dir: str, verbose: 
         for idx, s in enumerate(stories, start=1):
             title = getattr(s, 'name', None) or f"{name} #{idx}"
             origin = getattr(s, 'origin_content', None)
+            image_map = getattr(s, 'image_map', {})
             if origin and origin.strip():
-                asm.parse_text(origin, title=title)
+                asm.parse_text(origin, title=title, image_map=image_map)
                 included += 1
 
                 # 如果启用了秘录功能，提取角色名
@@ -452,8 +461,9 @@ def save_combined(client: StoryPRTSClient, names: List[str], outpath: str, verbo
             # 格式: 章节名：故事标题（每条故事都包含章节名）
             full_title = f"{name}：{title}"
             origin = getattr(s, 'origin_content', None)
+            image_map = getattr(s, 'image_map', {})
             if origin and origin.strip():
-                asm.parse_text(origin, title=full_title)
+                asm.parse_text(origin, title=full_title, image_map=image_map)
                 total_included += 1
 
                 # 如果启用了秘录功能，提取角色名

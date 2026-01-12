@@ -14,12 +14,15 @@ parse_test_to_docx.py
 """
 import re
 import sys
+import io
+import hashlib
 from typing import Optional
 from docx import Document
-from docx.shared import Pt, Inches
+from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+import requests
 
 
 def _set_font(run, font_name: str, size: float) -> None:
@@ -188,6 +191,67 @@ def add_narration(doc: Document, text: str) -> None:
     _set_paragraph_format(p, first_line_indent=0.28)
 
 
+def add_image_reference(doc: Document, image_index: int):
+    """添加图片索引引用（正文中）
+
+    Args:
+        image_index: 图片序号，如 1, 2, 3...
+    """
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    run = p.add_run(f"[图片: 图片{image_index}]")
+    run.font.bold = True
+    run.font.color.rgb = RGBColor(128, 128, 128)  # 灰色
+    _set_font(run, '宋体', 8.5)
+    _set_paragraph_format(p)
+    return run
+
+
+def add_decision(doc: Document, options: list[str]) -> None:
+    """添加选择支标题和选项列表
+
+    注意：选择支列表不会显示在文档中，仅用于内部状态管理
+
+    Args:
+        options: 选项文本列表，如 ["选项1", "选项2"]
+    """
+    # 不输出任何内容到文档，选择支信息通过分支标题体现
+    pass
+
+
+def add_predicate_header(doc: Document, references: str, options_map: dict) -> None:
+    """添加分支标题
+
+    Args:
+        references: 引用的选项编号，如 "1" 或 "1;2"
+        options_map: 选项编号到文本的映射，如 {"1": "选项1", "2": "选项2"}
+    """
+    refs = references.split(';')
+
+    # 构建分支标题文本（简洁样式，不占用整行）
+    if len(refs) == 1:
+        # 单个选项分支
+        option_text = options_map.get(refs[0], f"选项{refs[0]}")
+        title = f"[→ {option_text}]"
+    elif len(refs) == len(options_map):
+        # 汇合分支
+        title = "[→ 汇合]"
+    else:
+        # 多个选项的共同分支
+        option_texts = [options_map.get(r, f"选项{r}") for r in refs]
+        title = f"[→ {' & '.join(option_texts)}]"
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    run = p.add_run(title)
+    run.font.bold = True
+    run.font.color.rgb = RGBColor(0, 255, 255)  # 青色
+    _set_font(run, '宋体', 8.5)
+    _set_paragraph_format(p)
+    p.paragraph_format.space_before = Pt(6)
+    p.paragraph_format.space_after = Pt(6)
+
+
 def _add_sound_effect_paragraph(doc: Document, text: str) -> bool:
     """添加音效段落的内部辅助函数"""
     p = doc.add_paragraph()
@@ -244,6 +308,14 @@ class DocumentAssembler:
         self._first_section = True
         # 用于判断是否已经添加过大标题
         self._has_main_title = False
+        # 选择支相关状态
+        self.current_decision_options = {}  # 当前选择支的选项映射 {value: option_text}
+        self.current_predicate = None  # 当前所在的分支
+        # 图片相关状态
+        self.image_map = {}  # 图片映射 {image_id: image_url}
+        self.images_to_append = []  # 待追加的图片列表 [(image_index, image_url), ...]
+        self.image_counter = 0  # 图片计数器
+        self.image_reference_runs = {}  # 记录图片引用 run, 便于去重后更新编号
 
     def add_blank_lines(self, n: int):
         for _ in range(max(0, int(n))):
@@ -272,15 +344,20 @@ class DocumentAssembler:
         _set_font(run, '黑体', 18)
         _set_paragraph_format(p)
 
-    def parse_lines(self, lines, title: str = None, character: str = None, spacer_lines: int = None):
+    def parse_lines(self, lines, title: str = None, character: str = None, spacer_lines: int = None, image_map: dict = None):
         """Parse iterable of lines and append to internal document.
 
         lines: iterable of strings
         title: optional title to insert (centered, bold, large)
         character: optional character name to prepend to title (no spaces between)
         spacer_lines: overrides default spacer before this section
+        image_map: 图片映射 {image_id: image_url}
         Returns the list of skipped lines accumulated so far.
         """
+        # 设置图片映射
+        if image_map:
+            self.image_map = image_map
+
         if title:
             n = spacer_lines if spacer_lines is not None else self.spacer_lines
             # 如果这是第一个秘录/章节, 不插入前置空行
@@ -292,23 +369,118 @@ class DocumentAssembler:
             self._first_section = False
 
         for raw in lines:
-            handled = parse_line(raw, self.doc)
+            handled = parse_line(raw, self.doc, self)
             if not handled:
                 self.skipped_lines.append(raw.rstrip('\n'))
 
         return list(self.skipped_lines)
 
-    def parse_text(self, text: str, title: str = None, character: str = None, spacer_lines: int = None, main_title: str = None):
+    def parse_text(self, text: str, title: str = None, character: str = None, spacer_lines: int = None, main_title: str = None, image_map: dict = None):
         """Parse text string and append to internal document.
-        
+
         character: optional character name to prepend to title (no spaces between)
         main_title: optional main title (e.g., "反常光谱") to add at the beginning
+        image_map: 图片映射 {image_id: image_url}
         """
         if main_title:
             self.add_main_title(main_title)
-        return self.parse_lines(text.splitlines(), title=title, character=character, spacer_lines=spacer_lines)
+        return self.parse_lines(text.splitlines(), title=title, character=character, spacer_lines=spacer_lines, image_map=image_map)
+
+    def append_images(self):
+        """在文档末尾追加所有图片"""
+        if not self.images_to_append:
+            return
+        hash_to_final_index = {}
+        index_map = {}
+        output_entries = []
+        final_counter = 0
+
+        for image_index, image_url in self.images_to_append:
+            try:
+                response = requests.get(image_url, timeout=10)
+                response.raise_for_status()
+                content = response.content
+                image_hash = hashlib.sha256(content).hexdigest()
+
+                if image_hash in hash_to_final_index:
+                    index_map[image_index] = hash_to_final_index[image_hash]
+                    continue
+
+                final_counter += 1
+                image_stream = io.BytesIO(content)
+                output_entries.append({
+                    'type': 'image',
+                    'final_index': final_counter,
+                    'image_stream': image_stream,
+                    'image_url': image_url,
+                })
+                hash_to_final_index[image_hash] = final_counter
+                index_map[image_index] = final_counter
+            except Exception as e:
+                final_counter += 1
+                output_entries.append({
+                    'type': 'error',
+                    'final_index': final_counter,
+                    'image_url': image_url,
+                    'error': str(e),
+                })
+                index_map[image_index] = final_counter
+
+        if not output_entries:
+            return
+
+        # 更新正文中的图片引用编号
+        for original_index, run in self.image_reference_runs.items():
+            final_index = index_map.get(original_index)
+            if final_index:
+                run.text = f"[图片: 图片{final_index}]"
+
+        # 添加分页符
+        self.add_page_break()
+
+        # 添加图片部分标题
+        p = self.doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run("━━━ 图片 ━━━")
+        run.font.bold = True
+        _set_font(run, '黑体', 14)
+        _set_paragraph_format(p)
+        p.paragraph_format.space_before = Pt(12)
+        p.paragraph_format.space_after = Pt(12)
+
+        # 添加每张去重后的图片或错误信息
+        for entry in output_entries:
+            if entry['type'] == 'image':
+                p = self.doc.add_paragraph()
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                run = p.add_run()
+                entry['image_stream'].seek(0)
+                run.add_picture(entry['image_stream'], width=Inches(5.5))
+                _set_paragraph_format(p)
+
+                p = self.doc.add_paragraph()
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                run = p.add_run(f"图片{entry['final_index']}")
+                run.font.color.rgb = RGBColor(128, 128, 128)
+                _set_font(run, '宋体', 9)
+                _set_paragraph_format(p)
+                p.paragraph_format.space_after = Pt(18)
+            else:
+                p = self.doc.add_paragraph()
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                error_suffix = entry.get('error')
+                suffix = f" ({error_suffix})" if error_suffix else ""
+                run = p.add_run(f"[图片{entry['final_index']} 加载失败: {entry['image_url']}]"
+                                f"{suffix}")
+                run.font.color.rgb = RGBColor(255, 0, 0)
+                _set_font(run, '宋体', 9)
+                _set_paragraph_format(p)
+                p.paragraph_format.space_after = Pt(18)
 
     def save(self, outpath: str):
+        # 保存前追加图片
+        self.append_images()
+
         # 保存前添加页码
         if self.add_page_numbers:
             add_page_numbers(self.doc, position='bottom', alignment='center')
@@ -317,14 +489,63 @@ class DocumentAssembler:
         return list(self.skipped_lines)
 
 
-def parse_line(line: str, doc: Document) -> bool:
+def parse_line(line: str, doc: Document, assembler=None) -> bool:
     """解析一行并将可识别内容写入 doc。
 
     返回 True 表示该行被识别并处理，返回 False 表示该行未被识别（将被跳过）。
+    assembler: DocumentAssembler 实例，用于维护选择支和图片状态
     """
     line = line.strip()
     if not line:
         return False
+
+    # Image: 图片
+    # [Image(image="27_i01")]
+    m = re.search(r'Image\(image\s*=\s*"([^"]+)"', line, re.IGNORECASE)
+    if m and assembler:
+        image_id = m.group(1).strip()
+        # 查找图片 URL
+        if image_id in assembler.image_map:
+            assembler.image_counter += 1
+            image_url = assembler.image_map[image_id]
+            # 在正文中添加图片索引
+            run = add_image_reference(doc, assembler.image_counter)
+            assembler.image_reference_runs[assembler.image_counter] = run
+            # 记录待追加的图片
+            assembler.images_to_append.append((assembler.image_counter, image_url))
+        return True
+
+    # Decision: 选择支
+    # [Decision(options="选项1;选项2;...", values="1;2;...")]
+    m = re.search(r'Decision\(options\s*=\s*"([^"]+)".*?values\s*=\s*"([^"]+)"', line, re.IGNORECASE)
+    if m:
+        options_str = m.group(1)
+        values_str = m.group(2)
+        options = options_str.split(';')
+        values = values_str.split(';')
+
+        # 保存选择支状态
+        if assembler:
+            assembler.current_decision_options = {v.strip(): o.strip() for v, o in zip(values, options)}
+            assembler.current_predicate = None
+
+        # 显示选择支
+        add_decision(doc, options)
+        return True
+
+    # Predicate: 分支标记
+    # [Predicate(references="1")] 或 [Predicate(references="1;2")]
+    m = re.search(r'Predicate\(references\s*=\s*"([^"]+)"', line, re.IGNORECASE)
+    if m:
+        references = m.group(1).strip()
+
+        if assembler:
+            assembler.current_predicate = references
+            # 显示分支标题
+            if assembler.current_decision_options:
+                add_predicate_header(doc, references, assembler.current_decision_options)
+
+        return True
 
     # animtext with <p=1> and <p=2>
     m = re.search(r'<p=1>([^<\n]+)<p=2>([^<\n]+)', line)
@@ -384,13 +605,13 @@ def parse_line(line: str, doc: Document) -> bool:
                 add_sound_effect(doc, line.strip('[]'))
         return True
 
-    # Subtitle-like short quoted lines in plain text like: “留下。”
-    if re.match(r'^["“].+["”]$', line):
+    # Subtitle-like short quoted lines in plain text like: "留下。"
+    if re.match(r'^[""].+[""]$', line):
         add_narration(doc, line)
         return True
 
     # scene separator markers
-    if line == '#' or line.lower().startswith('decision(') or line.lower().startswith('[dialog]') or line.lower().startswith('[charslot]') or line.lower().startswith('[background]'):
+    if line == '#' or line.lower().startswith('[dialog]') or line.lower().startswith('[charslot]') or line.lower().startswith('[background]'):
         # 明确忽略这些结构化/控制指令（不写入 docx）
         return False
 

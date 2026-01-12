@@ -24,10 +24,15 @@ class Requester:
 @dataclass
 class Story:
     """故事/密录数据类"""
-    
+
     name: str = ""
     intro: str = ""
     origin_content: str = ""
+    image_map: dict = None  # 图片映射 {image_id: image_url}
+
+    def __post_init__(self):
+        if self.image_map is None:
+            self.image_map = {}
 
 
 def _normalize_names(names: Iterable[str]) -> List[str]:

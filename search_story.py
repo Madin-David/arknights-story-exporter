@@ -132,7 +132,20 @@ class StoryParser:
                         # 获取文本内容
                         content = content_div.get_text(separator="\n", strip=True)
 
-                    story_obj = Story(name=story["title"], origin_content=content)
+                    # 提取图片映射 datas_back
+                    image_map = {}
+                    datas_back = content_div.find("pre", {"id": "datas_back"})
+                    if datas_back:
+                        back_text = datas_back.get_text()
+                        for line in back_text.strip().split('\n'):
+                            if ',' in line:
+                                parts = line.split(',', 1)
+                                if len(parts) == 2:
+                                    image_id = parts[0].strip()
+                                    image_url = parts[1].strip()
+                                    image_map[image_id] = image_url
+
+                    story_obj = Story(name=story["title"], origin_content=content, image_map=image_map)
                     stories.append(story_obj)
 
                     # 更新进度条

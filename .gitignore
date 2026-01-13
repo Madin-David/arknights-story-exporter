@@ -1,3 +1,7 @@
 *.pyc
 *.docx
 *.json
+__pycache__/
+tmpclaude-*
+test_*.py
+test_*.docx

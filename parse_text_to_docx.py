@@ -24,6 +24,19 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 import requests
 
+# Import modular parser system
+from parsers.registry import ParserRegistry
+from parsers.control_parser import ControlParser
+from parsers.image_parser import ImageParser
+from parsers.decision_parser import DecisionParser
+from parsers.predicate_parser import PredicateParser
+from parsers.scene_parser import SceneParser
+from parsers.subtitle_parser import SubtitleParser
+from parsers.dialogue_parser import DialogueParser
+from parsers.sound_parser import SoundParser
+from parsers.narration_parser import NarrationParser
+from config.loader import ParserConfig
+
 
 def _set_font(run, font_name: str, size: float) -> None:
     """设置中文字体"""
@@ -291,31 +304,121 @@ class DocumentAssembler:
         asm.save('out.docx')
     """
 
-    def __init__(self, spacer_lines: int = 2, page_size: str = 'A4', margin_size: str = 'narrow', add_page_numbers: bool = True):
+    def __init__(self, config: ParserConfig = None):
         """初始化文档组装器
 
         Args:
-            spacer_lines: 章节之间的空行数
-            page_size: 页面大小，'A4' 或 'Letter'
-            margin_size: 页边距，'narrow'(窄), 'normal'(标准), 'wide'(宽)
-            add_page_numbers: 是否添加页码（底部居中）
+            config: ParserConfig 对象（可选，使用默认配置）
         """
-        self.doc = create_document(page_size=page_size, margin_size=margin_size)
-        self.spacer_lines = int(spacer_lines)
+        # Load configuration
+        self.config = config or ParserConfig()
+
+        # Get configuration values
+        self.spacer_lines = self.config.get('document.spacer_lines', 2)
+        page_size_val = self.config.get('document.page_size', 'A4')
+        margin_size_val = self.config.get('document.margin_size', 'narrow')
+        self.add_page_numbers = self.config.get('document.add_page_numbers', True)
+
+        # Create document
+        self.doc = create_document(page_size=page_size_val, margin_size=margin_size_val)
+
+        # Initialize parser registry
+        self.registry = ParserRegistry()
+        self._setup_parsers()
+
+        # Set context
+        self.registry.context.doc = self.doc
+        self.registry.context.assembler = self
+
+        # Internal state
         self.skipped_lines = []
-        self.add_page_numbers = add_page_numbers
-        # 用于判断是否已经添加过第一个秘录/章节，首个秘录前不插入空行
         self._first_section = True
-        # 用于判断是否已经添加过大标题
         self._has_main_title = False
+
         # 选择支相关状态
-        self.current_decision_options = {}  # 当前选择支的选项映射 {value: option_text}
-        self.current_predicate = None  # 当前所在的分支
+        self.current_decision_options = {}
+        self.current_predicate = None
+
         # 图片相关状态
-        self.image_map = {}  # 图片映射 {image_id: image_url}
-        self.images_to_append = []  # 待追加的图片列表 [(image_index, image_url), ...]
-        self.image_counter = 0  # 图片计数器
-        self.image_reference_runs = {}  # 记录图片引用 run, 便于去重后更新编号
+        self.image_map = {}
+        self.images_to_append = []
+        self.image_counter = 0
+        self.image_reference_runs = {}
+
+    def _setup_parsers(self):
+        """Setup parsers based on configuration"""
+        parser_configs = self.config.get('parsers', {})
+
+        # Map parser names to classes
+        parser_classes = {
+            'control': ControlParser,
+            'image': ImageParser,
+            'decision': DecisionParser,
+            'predicate': PredicateParser,
+            'scene': SceneParser,
+            'subtitle': SubtitleParser,
+            'dialogue': DialogueParser,
+            'sound': SoundParser,
+            'narration': NarrationParser,
+        }
+
+        # Register parsers
+        for name, parser_class in parser_classes.items():
+            cfg = parser_configs.get(name, {})
+            enabled = cfg.get('enabled', True)
+            priority = cfg.get('priority', 50)
+
+            # Create parser with config
+            if name == 'sound':
+                skip_resource_ids = cfg.get('skip_resource_ids', True)
+                parser = parser_class(enabled=enabled, priority=priority,
+                                    skip_resource_ids=skip_resource_ids)
+            else:
+                parser = parser_class(enabled=enabled, priority=priority)
+
+            self.registry.register(parser)
+
+    def enable_parser(self, parser_name: str):
+        """Enable a specific parser by name
+
+        Args:
+            parser_name: Name of the parser ('image', 'decision', etc.)
+        """
+        parser_classes = {
+            'control': ControlParser,
+            'image': ImageParser,
+            'decision': DecisionParser,
+            'predicate': PredicateParser,
+            'scene': SceneParser,
+            'subtitle': SubtitleParser,
+            'dialogue': DialogueParser,
+            'sound': SoundParser,
+            'narration': NarrationParser,
+        }
+        parser_class = parser_classes.get(parser_name)
+        if parser_class:
+            self.registry.enable_parser(parser_class)
+
+    def disable_parser(self, parser_name: str):
+        """Disable a specific parser by name
+
+        Args:
+            parser_name: Name of the parser ('image', 'decision', etc.)
+        """
+        parser_classes = {
+            'control': ControlParser,
+            'image': ImageParser,
+            'decision': DecisionParser,
+            'predicate': PredicateParser,
+            'scene': SceneParser,
+            'subtitle': SubtitleParser,
+            'dialogue': DialogueParser,
+            'sound': SoundParser,
+            'narration': NarrationParser,
+        }
+        parser_class = parser_classes.get(parser_name)
+        if parser_class:
+            self.registry.disable_parser(parser_class)
 
     def add_blank_lines(self, n: int):
         for _ in range(max(0, int(n))):
@@ -358,6 +461,9 @@ class DocumentAssembler:
         if image_map:
             self.image_map = image_map
 
+        # Initialize parsers
+        self.registry.initialize_all()
+
         if title:
             n = spacer_lines if spacer_lines is not None else self.spacer_lines
             # 如果这是第一个秘录/章节, 不插入前置空行
@@ -368,10 +474,14 @@ class DocumentAssembler:
             # 标记已添加首个章节
             self._first_section = False
 
+        # Parse lines using the registry
         for raw in lines:
-            handled = parse_line(raw, self.doc, self)
+            handled = self.registry.parse_line(raw)
             if not handled:
                 self.skipped_lines.append(raw.rstrip('\n'))
+
+        # Finalize parsers
+        self.registry.finalize_all()
 
         return list(self.skipped_lines)
 

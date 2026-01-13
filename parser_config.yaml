@@ -1,0 +1,88 @@
+# 解析器配置文件
+# 此文件用于配置故事文本解析器的行为
+
+# 文档设置
+document:
+  page_size: "A4"  # 页面大小: A4 或 Letter
+  margin_size: "narrow"  # 页边距: narrow(窄), normal(标准), wide(宽)
+  add_page_numbers: true  # 是否添加页码
+  spacer_lines: 2  # 章节之间的空行数
+
+# 解析器设置
+# 每个解析器可以独立启用/禁用，并设置优先级（数字越小优先级越高）
+parsers:
+  # 控制指令解析器（识别但不输出的指令）
+  control:
+    enabled: true
+    priority: 5
+
+  # 图片解析器
+  image:
+    enabled: true
+    priority: 10
+
+  # 选择支解析器
+  decision:
+    enabled: true
+    priority: 20
+
+  # 分支解析器
+  predicate:
+    enabled: true
+    priority: 21
+
+  # 场景标题解析器
+  scene:
+    enabled: true
+    priority: 30
+
+  # 字幕解析器
+  subtitle:
+    enabled: true
+    priority: 35
+
+  # 对话解析器
+  dialogue:
+    enabled: true
+    priority: 40
+
+  # 音效解析器
+  sound:
+    enabled: true
+    priority: 45
+    skip_resource_ids: true  # 跳过资源ID（如 $bgm_xxx）
+
+  # 旁白解析器
+  narration:
+    enabled: true
+    priority: 60
+
+# 格式化选项
+formatting:
+  # 字体设置
+  fonts:
+    main_title:
+      name: "黑体"
+      size: 22
+      bold: true
+    scene_title:
+      name: "黑体"
+      size: 14
+      bold: true
+    dialogue_character:
+      name: "宋体"
+      size: 8.5
+      bold: true
+    dialogue_text:
+      name: "宋体"
+      size: 8.5
+      bold: false
+    narration:
+      name: "楷体"
+      size: 8.5
+      bold: false
+
+  # 段落设置
+  paragraphs:
+    line_spacing: 1.5  # 行距
+    narration_indent: 0.28  # 旁白首行缩进（英寸）

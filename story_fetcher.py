@@ -340,7 +340,7 @@ def append_memory_to_content(asm: DocumentAssembler, memory_dict: dict, verbose:
 
 
 def save_per_chapter(client: StoryPRTSClient, name: str, out_dir: str, verbose: bool,
-                     with_memory: bool = False, memory_client: PRTSClient = None):
+                     with_memory: bool = False, memory_client: PRTSClient = None, config=None):
     """为每个章节/故事单独生成 docx 文件"""
     stories = client.get_story_content_by_name(name)
     if not stories:
@@ -354,7 +354,7 @@ def save_per_chapter(client: StoryPRTSClient, name: str, out_dir: str, verbose: 
     safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).strip()
     outpath = os.path.join(out_dir, f"{safe_name}_story.docx")
 
-    asm = DocumentAssembler()
+    asm = DocumentAssembler(config=config)
     included = 0
     all_character_names = set()  # 收集所有故事中的角色名
 
@@ -418,7 +418,7 @@ def save_per_chapter(client: StoryPRTSClient, name: str, out_dir: str, verbose: 
 
 
 def save_combined(client: StoryPRTSClient, names: List[str], outpath: str, verbose: bool,
-                  with_memory: bool = False, memory_client: PRTSClient = None):
+                  with_memory: bool = False, memory_client: PRTSClient = None, config=None):
     """将所有章节/故事合并到一个 docx 文件"""
     # 记录开始时间
     start_time = time.time()
@@ -426,7 +426,7 @@ def save_combined(client: StoryPRTSClient, names: List[str], outpath: str, verbo
     # 打印任务横幅
     print_task_header(names, "合并输出", outpath)
 
-    asm = DocumentAssembler()
+    asm = DocumentAssembler(config=config)
     total_included = 0
     all_character_names = set()  # 收集所有故事中的角色名
     first_section = True  # 标记是否为第一个章节
@@ -518,6 +518,7 @@ def main():
     parser.add_argument("-o", "--out", help="输出文件或目录。若 --combined 则为输出文件路径，否则为输出目录（默认: 当前目录）")
     parser.add_argument("--no-cache", action="store_true", help="不使用本地缓存，强制从服务器拉取")
     parser.add_argument("--with-memory", action="store_true", help="提取剧情中的角色名并附加相关角色的秘录")
+    parser.add_argument("--config", help="解析器配置文件路径 (YAML/JSON)")
     parser.add_argument("-v", "--verbose", action="store_true", help="显示更多调试信息")
     args = parser.parse_args()
 
@@ -527,7 +528,18 @@ def main():
         parser.error(str(exc))
 
     client = StoryPRTSClient(use_cache=not args.no_cache)
-    
+
+    # Load parser configuration if specified
+    parser_config = None
+    if args.config:
+        try:
+            from config.loader import ParserConfig
+            parser_config = ParserConfig.from_file(args.config)
+            if args.verbose:
+                print(f"✓ 已加载配置文件: {args.config}")
+        except Exception as e:
+            print(f"⚠ 加载配置文件失败: {e}，将使用默认配置")
+
     # 如果启用了秘录功能，初始化秘录客户端
     memory_client = None
     if args.with_memory:
@@ -544,7 +556,8 @@ def main():
         outpath = args.out if args.out else "combined_story.docx"
         try:
             count = save_combined(client, names, outpath, verbose=args.verbose,
-                                 with_memory=args.with_memory, memory_client=memory_client)
+                                 with_memory=args.with_memory, memory_client=memory_client,
+                                 config=parser_config)
             if count == 0:
                 sys.exit(3)
         except Exception as e:
@@ -558,7 +571,8 @@ def main():
     for name in names:
         try:
             c = save_per_chapter(client, name, out_dir, verbose=args.verbose,
-                               with_memory=args.with_memory, memory_client=memory_client)
+                               with_memory=args.with_memory, memory_client=memory_client,
+                               config=parser_config)
             total += c
         except Exception as e:
             print(f"为 `{name}` 生成文件出错:", e)
